@@ -69,7 +69,7 @@ DOC_DIR = ../Documentation
 BIN_DIR = $(DESTDIR)/usr/bin
 
 # Full path for the directory that will hold the exception handler:
-EXCEPTION_DIR = $(DESTDIR)/usr/share/spim
+EXCEPTION_DIR = ../CPU
 
 # Full path for the directory that will hold the man files:
 MAN_DIR = $(DESTDIR)/usr/share/man/man1
@@ -123,7 +123,7 @@ LEXCFLAGS += -O $(CFLAGS)
 
 
 
-OBJS = spim.o spim-utils.o run.o mem.o inst.o data.o sym-tbl.o parser_yacc.o lex.yy.o \
+OBJS = spim.o spim-utils.o run.o mem.o inst.o data.o sym-tbl.o parser_yacc.o lex.yy.o pipeline.o \
        syscall.o display-utils.o string-stream.o
 
 

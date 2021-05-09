@@ -1,1 +1,8 @@
 .DS_Store
+/spimsimulator/CPU/run.c
+/spimsimulator/CPU/pipeline.c
+/spimsimulator/CPU/pipeline.h 
+/spimsimulator/spim/*.o
+/spimsimulator/spim/*.h
+/spimsimulator/spim/*.c
+/spimsimulator/spim/spim
