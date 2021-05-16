@@ -340,7 +340,6 @@ int getDataStall(int rs, int rt, ControlSignal controlSignal) {
 	if (lengthOfPRQueue == 0) return 0;
 
 	PipelineRegister firstPR = getFirst();
-	PipelineRegister secondPR = getSecond();
 
 	if (isSameControlSignal(R_TYPE_CONTROL_SIGNAL, controlSignal)) {
 		if (isSameControlSignal(LW_TYPE_CONTROL_SIGNAL, firstPR.controlSignal)) {
@@ -369,6 +368,14 @@ int getDataStall(int rs, int rt, ControlSignal controlSignal) {
 		}
 		if (isSameControlSignal(I_TYPE_CONTROL_SIGNAL, firstPR.controlSignal)) {
 			if (firstPR.rt == rs || firstPR.rt == rt) return  1;
+		}
+
+		if (lengthOfPRQueue == 1) return 0;
+
+		PipelineRegister secondPR = getSecond();
+
+		if (isSameControlSignal(LW_TYPE_CONTROL_SIGNAL, secondPR.controlSignal)) {
+			if (secondPR.rt == rs || secondPR.rt == rt) return 1;
 		}
 	}
 
@@ -1158,7 +1165,7 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 		else
 		  R[RD (inst)] = R[RT (inst)];
 
-		processInst(NULL, RT (inst), RD (inst), R_TYPE_CONTROL_SIGNAL, false);
+		processInst(-1, RT (inst), RD (inst), R_TYPE_CONTROL_SIGNAL, false);
 
 		break;
 	      }
@@ -1246,7 +1253,7 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 		else
 		  R[RD (inst)] = val;
 
-		processInst(RS (inst), RT (inst), RD (inst), R_TYPE_CONTROL_SIGNAL, false);
+		processInst(-1, RT (inst), RD (inst), R_TYPE_CONTROL_SIGNAL, false);
 		
 		break;
 	      }
