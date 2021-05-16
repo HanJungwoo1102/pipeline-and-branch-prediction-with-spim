@@ -189,64 +189,7 @@ static int running_in_delay_slot = 0;
 //===============================================================
 
 /*
-	branch prediction
-*/
-
-typedef struct BTB {
-	mem_addr branchInstructionAddress;
-	char predictionBits;
-} BTB;
-
-const int LENGTH_OF_BTB_QUEUE = 8;
-BTB BTBQueue[LENGTH_OF_BTB_QUEUE] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
-int top_OF_BTB_QUEUE = LENGTH_OF_BTB_QUEUE - 1;
-
-void pushInBTBQueue(mem_addr branchInstructionAddress) {
-	top_OF_BTB_QUEUE += 1;
-
-	if (top_OF_BTB_QUEUE == LENGTH_OF_BTB_QUEUE)
-		top_OF_BTB_QUEUE -= LENGTH_OF_BTB_QUEUE;
-
-	BTB btb;
-	btb.branchInstructionAddress = branchInstructionAddress;
-	btb.predictionBits = 1;
-
-	BTBQueue[top_OF_BTB_QUEUE] = btb;
-}
-
-int findIndexBTB(mem_addr instructionAddress) {
-	int i;
-	for (i = 0; i < LENGTH_OF_BTB_QUEUE; i++) {
-		BTB curBTB = BTBQueue[i];
-		if (curBTB.branchInstructionAddress == instructionAddress) {
-			return i;
-		}
-	}
-	return -1;
-}
-
-bool getPrediction(int index) {
-	return BTBQueue[index].predictionBits > 1;
-}
-
-void editPredictionBit(int index, bool isJumped) {
-	if (isJumped && BTBQueue[index].predictionBits < 2) BTBQueue[index].predictionBits += 1;
-	else if (!isJumped && BTBQueue[index].predictionBits > 0) BTBQueue[index].predictionBits -= 1;
-}
-
-void printBTBQueue() {
-	int i;
-	printf("------------------\n");
-	for (i = 0; i < LENGTH_OF_BTB_QUEUE; i++) {
-		BTB curBTB = BTBQueue[i];
-		printf("address: %d, bit: %d\n", curBTB.branchInstructionAddress, curBTB.predictionBits);
-	}
-}
-
-//===============================================================
-
-/*
-	control signal
+	PIPELINE_REGISTER_QUEUE
 */
 
 typedef struct ControlSignal {
@@ -258,8 +201,15 @@ typedef struct ControlSignal {
 	bool MemWrite;
 	bool Branch;
 	bool Jump;
-	bool hasPredictionFailStall;
 } ControlSignal;
+
+ControlSignal R_TYPE_CONTROL_SIGNAL;
+ControlSignal I_TYPE_CONTROL_SIGNAL;
+ControlSignal LW_TYPE_CONTROL_SIGNAL;
+ControlSignal SW_TYPE_CONTROL_SIGNAL;
+ControlSignal BRANCH_TYPE_CONTROL_SIGNAL;
+ControlSignal JUMP_TYPE_CONTROL_SIGNAL;
+ControlSignal NO_TYPE_CONTROL_SIGNAL;
 
 void buildRControlSignal(ControlSignal* controlSignal) {
 	controlSignal->RegDst = true;
@@ -291,14 +241,18 @@ void buildLwControlSignal(ControlSignal* controlSignal) {
 	controlSignal->MemRead  = true;
 	controlSignal->MemWrite = false;
 	controlSignal->Branch = false;
+	controlSignal->Jump = false;
 }
 
 void buildSwControlSignal(ControlSignal* controlSignal) {
+	controlSignal->RegDst = false;
 	controlSignal->ALUSrc = true;
+	controlSignal->MemToReg = false;
 	controlSignal->RegWrite = false;
 	controlSignal->MemRead  = false;
 	controlSignal->MemWrite = true;
 	controlSignal->Branch = false;
+	controlSignal->Jump = false;
 }
 
 void buildBranchControlSignal(ControlSignal* controlSignal) {
@@ -323,11 +277,16 @@ void buildJumpControlSignal(ControlSignal* controlSignal) {
 	controlSignal->Jump = true;
 }
 
-//===============================================================
-
-/*
-	PIPELINE_REGISTER_QUEUE
-*/
+bool isSameControlSignal(ControlSignal a, ControlSignal b) {
+	return a.RegDst == b.RegDst
+		&& a.ALUSrc == b.ALUSrc
+		&& a.MemToReg == b.MemToReg
+		&& a.RegWrite == b.RegWrite
+		&& a.MemRead == b.MemRead
+		&& a.MemWrite == b.MemWrite
+		&& a.Branch == b.Branch
+		&& a.Jump == b.Jump;
+}
 
 typedef struct PipelineRegister {
 	int rs;
@@ -337,17 +296,19 @@ typedef struct PipelineRegister {
 	bool isBranchPredictionFailed;
 } PipelineRegister;
 
-const int LENGTH_OF_PIPELINE_REGISTER_QUEUE = 2;
-PipelineRegister RD_QUEUE[LENGTH_OF_PIPELINE_REGISTER_QUEUE] = { NULL, NULL };
-int top_OF_RD_QUEUE = LENGTH_OF_PIPELINE_REGISTER_QUEUE - 1;
+const int SIZE_OF_PIPELINE_REGISTER_QUEUE = 2;
+PipelineRegister RD_QUEUE[SIZE_OF_PIPELINE_REGISTER_QUEUE] = { NULL, NULL };
+int top_OF_RD_QUEUE = SIZE_OF_PIPELINE_REGISTER_QUEUE - 1;
+int lengthOfPRQueue;
 
 void pushInPRQueue(PipelineRegister pr) {
 	top_OF_RD_QUEUE = top_OF_RD_QUEUE + 1;
 
-	if (top_OF_RD_QUEUE == LENGTH_OF_PIPELINE_REGISTER_QUEUE)
-		top_OF_RD_QUEUE -= LENGTH_OF_PIPELINE_REGISTER_QUEUE;
+	if (top_OF_RD_QUEUE == SIZE_OF_PIPELINE_REGISTER_QUEUE)
+		top_OF_RD_QUEUE -= SIZE_OF_PIPELINE_REGISTER_QUEUE;
 
 	RD_QUEUE[top_OF_RD_QUEUE] = pr;
+	lengthOfPRQueue += 1;
 }
 
 PipelineRegister getFirst() {
@@ -358,7 +319,7 @@ PipelineRegister getSecond() {
 	int index = top_OF_RD_QUEUE - 1;
 	
 	if (index < 0)
-		index += LENGTH_OF_PIPELINE_REGISTER_QUEUE;
+		index += SIZE_OF_PIPELINE_REGISTER_QUEUE;
 
 	return RD_QUEUE[index];
 }
@@ -376,16 +337,43 @@ bool predict() {
 }
 
 int getDataStall(int rs, int rt, ControlSignal controlSignal) {
-	PipelineRegister previousPipelineReg = getFirst();
+	if (lengthOfPRQueue == 0) return 0;
+	
+	PipelineRegister firstPR = getFirst();
+	PipelineRegister secondPR = getSecond();
 
-	if (previousPipelineReg.controlSignal.MemRead && (previousPipelineReg.rt == rs || previousPipelineReg.rt == rt)) {
-		if (controlSignal.Branch) return 2;
-		else return 1;
-	} else if (previousPipelineReg.controlSignal.RegWrite && controlSignal.Branch) {
-		if (previousPipelineReg.controlSignal.RegDst) {
-			if (previousPipelineReg.rd == rs || previousPipelineReg.rd == rt) return 1;
-		} else {
-			if (previousPipelineReg.rt == rs || previousPipelineReg.rt == rt) return 1;
+	if (isSameControlSignal(R_TYPE_CONTROL_SIGNAL, controlSignal)) {
+		if (isSameControlSignal(LW_TYPE_CONTROL_SIGNAL, firstPR.controlSignal)) {
+			if (firstPR.rt == rs || firstPR.rt == rt) return 1;
+		}
+	}
+
+	if (isSameControlSignal(I_TYPE_CONTROL_SIGNAL, controlSignal)) {
+		if (isSameControlSignal(LW_TYPE_CONTROL_SIGNAL, firstPR.controlSignal)) {
+			printf("2\n");
+			if (firstPR.rt == rs) return 1;
+		}
+	}
+
+	if (isSameControlSignal(LW_TYPE_CONTROL_SIGNAL, controlSignal)) {
+		if (isSameControlSignal(LW_TYPE_CONTROL_SIGNAL, firstPR.controlSignal)) {
+			printf("3\n");
+			if (firstPR.rt == rs) return 1;
+		}
+	}
+
+	if (isSameControlSignal(BRANCH_TYPE_CONTROL_SIGNAL, controlSignal)) {
+		if (isSameControlSignal(LW_TYPE_CONTROL_SIGNAL, firstPR.controlSignal)) {
+			printf("4\n");
+			if (firstPR.rt == rs || firstPR.rt == rt) return 2;
+		}
+		if (isSameControlSignal(R_TYPE_CONTROL_SIGNAL, firstPR.controlSignal)) {
+			printf("5\n");
+			if (firstPR.rd == rs || firstPR.rd == rt) return  1;
+		}
+		if (isSameControlSignal(I_TYPE_CONTROL_SIGNAL, firstPR.controlSignal)) {
+			printf("6\n");
+			if (firstPR.rt == rs || firstPR.rt == rt) return  1;
 		}
 	}
 
@@ -443,6 +431,13 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
     next_step = IO_INTERVAL;
   else
     next_step = steps_to_run;	/* Run to completion */
+
+	buildRControlSignal(&R_TYPE_CONTROL_SIGNAL);
+	buildIControlSignal(&I_TYPE_CONTROL_SIGNAL);
+	buildLwControlSignal(&JUMP_TYPE_CONTROL_SIGNAL);
+	buildSwControlSignal(&SW_TYPE_CONTROL_SIGNAL);
+	buildBranchControlSignal(&BRANCH_TYPE_CONTROL_SIGNAL);
+	buildJumpControlSignal(&JUMP_TYPE_CONTROL_SIGNAL);
 
   /* Start a timer running */
   start_CP0_timer();
@@ -522,7 +517,7 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 	      return false;
 	    }
 
-	  if (display)
+	  // if (display)
 	    print_inst (PC);
 
 #ifdef TEST_ASM
@@ -534,7 +529,6 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 		//======================
 		
 		if (step > NUM_OF_NONE_MAIN_INSTRUCTIONS - 1) isAfterMain = true;
-		ControlSignal controlSignal;
 
 		//======================
 
@@ -549,9 +543,7 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 		  RAISE_EXCEPTION (ExcCode_Ov, break);
 		R[RD (inst)] = sum;
 
-		buildRControlSignal(&controlSignal);
-
-		processInst(RS (inst), RT (inst), RD (inst), controlSignal, false);
+		processInst(RS (inst), RT (inst), RD (inst), R_TYPE_CONTROL_SIGNAL, false);
 
 		break;
 	      }
@@ -565,9 +557,7 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 		  RAISE_EXCEPTION (ExcCode_Ov, break);
 		R[RT (inst)] = sum;
 
-		buildIControlSignal(&controlSignal);
-
-		processInst(RS (inst), RT (inst), RD (inst), controlSignal, false);
+		processInst(RS (inst), RT (inst), RD (inst), I_TYPE_CONTROL_SIGNAL, false);
 
 		break;
 	      }
@@ -583,18 +573,14 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 	    case Y_AND_OP:
 	      R[RD (inst)] = R[RS (inst)] & R[RT (inst)];
 
-				buildRControlSignal(&controlSignal);
-
-				processInst(RS (inst), RT (inst), RD (inst), controlSignal, false);
+				processInst(RS (inst), RT (inst), RD (inst), R_TYPE_CONTROL_SIGNAL, false);
 
 	      break;
 
 	    case Y_ANDI_OP:
 	      R[RT (inst)] = R[RS (inst)] & (0xffff & IMM (inst));
 
-				buildIControlSignal(&controlSignal);
-
-				processInst(RS (inst), RT (inst), RD (inst), controlSignal, false);
+				processInst(RS (inst), RT (inst), RD (inst), I_TYPE_CONTROL_SIGNAL, false);
 
 	      break;
 
@@ -605,28 +591,14 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 	      RAISE_EXCEPTION (ExcCode_CpU, {}); /* No Coprocessor 2 */
 	      break;
 
-	    case Y_BEQ_OP: {
-				int findedIndex = findIndexBTB(PC);
-
-				if (findedIndex == -1) {
-					pushInBTBQueue(PC);
-					findedIndex = findIndexBTB(PC);
-				}
-
-				bool predict = getPrediction(findedIndex);
-				bool isJumped = R[RS (inst)] == R[RT (inst)];
-				editPredictionBit(findedIndex, isJumped);
-
+	    case Y_BEQ_OP:
 	      BRANCH_INST (R[RS (inst)] == R[RT (inst)],
 			   PC + IDISP (inst),
 			   0);
 
-				buildBranchControlSignal(&controlSignal);
-
-				processInst(RS (inst), RT (inst), RD (inst), controlSignal, predict != isJumped);
+				processInst(RS (inst), RT (inst), RD (inst), BRANCH_TYPE_CONTROL_SIGNAL, predict() != (R[RS (inst)] == R[RT (inst)]));
 
 	      break;
-			}
 
 	    case Y_BEQL_OP:
 	      BRANCH_INST (R[RS (inst)] == R[RT (inst)],
@@ -710,28 +682,14 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 			   1);
 	      break;
 
-	    case Y_BNE_OP: {
-				int findedIndex = findIndexBTB(PC);
-
-				if (findedIndex == -1) {
-					pushInBTBQueue(PC);
-					findedIndex = findIndexBTB(PC);
-				}
-
-				bool predict = getPrediction(findedIndex);
-				bool isJumped = R[RS (inst)] != R[RT (inst)];
-				editPredictionBit(findedIndex, isJumped);
-
+	    case Y_BNE_OP:
 	      BRANCH_INST (R[RS (inst)] != R[RT (inst)],
 			   PC + IDISP (inst),
 			   0);
 				
-				buildBranchControlSignal(&controlSignal);
-
-				processInst(RS (inst), RT (inst), RD (inst), controlSignal, predict != isJumped);
+				processInst(RS (inst), RT (inst), RD (inst), BRANCH_TYPE_CONTROL_SIGNAL, predict() != (R[RS (inst)] != R[RT (inst)]));
 			
 	      break;
-			}
 
 	    case Y_BNEL_OP:
 	      BRANCH_INST (R[RS (inst)] != R[RT (inst)],
@@ -825,9 +783,7 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 	    case Y_J_OP:
 	      JUMP_INST (((PC & 0xf0000000) | TARGET (inst) << 2));
 
-				buildJumpControlSignal(&controlSignal);
-
-				processInst(RS (inst), RT (inst), RD (inst), controlSignal, false);
+				processInst(RS (inst), RT (inst), RD (inst), JUMP_TYPE_CONTROL_SIGNAL, false);
 
 	      break;
 
@@ -838,9 +794,7 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 		R[31] = PC + BYTES_PER_WORD;
 	      JUMP_INST (((PC & 0xf0000000) | (TARGET (inst) << 2)));
 
-				buildJumpControlSignal(&controlSignal);
-
-				processInst(RS (inst), RT (inst), RD (inst), controlSignal, false);
+				processInst(RS (inst), RT (inst), RD (inst), JUMP_TYPE_CONTROL_SIGNAL, false);
 
 	      break;
 
@@ -862,9 +816,7 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 
 		JUMP_INST (tmp);
 
-				buildJumpControlSignal(&controlSignal);
-
-				processInst(RS (inst), RT (inst), RD (inst), controlSignal, false);
+				processInst(RS (inst), RT (inst), RD (inst), JUMP_TYPE_CONTROL_SIGNAL, false);
 
 	      }
 	      break;
@@ -903,9 +855,7 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 	    case Y_LUI_OP:
 	      R[RT (inst)] = (IMM (inst) << 16) & 0xffff0000;
 
-				buildIControlSignal(&controlSignal);
-
-				processInst(NULL, RT (inst), RD (inst), controlSignal, false);
+				processInst(NULL, RT (inst), RD (inst), I_TYPE_CONTROL_SIGNAL, false);
 
 	      break;
 
@@ -913,10 +863,8 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 	      LOAD_INST (&R[RT (inst)],
 			 read_mem_word (R[BASE (inst)] + IOFFSET (inst)),
 			 0xffffffff);
-			 
-				buildLwControlSignal(&controlSignal);
 
-				processInst(RS (inst), RT (inst), RD (inst), controlSignal, false);	
+				processInst(RS (inst), RT (inst), RD (inst), LW_TYPE_CONTROL_SIGNAL, false);	
 
 	      break;
 
@@ -1163,19 +1111,15 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 
 	    case Y_OR_OP:
 	      R[RD (inst)] = R[RS (inst)] | R[RT (inst)];
-				
-				buildRControlSignal(&controlSignal);
 
-				processInst(RS (inst), RT (inst), RD (inst), controlSignal, false);
+				processInst(RS (inst), RT (inst), RD (inst), R_TYPE_CONTROL_SIGNAL, false);
 				
 	      break;
 
 	    case Y_ORI_OP:
 	      R[RT (inst)] = R[RS (inst)] | (0xffff & IMM (inst));
 
-				buildIControlSignal(&controlSignal);
-
-				processInst(RS (inst), RT (inst), RD (inst), controlSignal, false);
+				processInst(RS (inst), RT (inst), RD (inst), I_TYPE_CONTROL_SIGNAL, false);
 
 	      break;
 
@@ -1219,9 +1163,7 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 		else
 		  R[RD (inst)] = R[RT (inst)];
 
-		buildIControlSignal(&controlSignal);
-
-		processInst(NULL, RT (inst), RD (inst), controlSignal, false);
+		processInst(NULL, RT (inst), RD (inst), R_TYPE_CONTROL_SIGNAL, false);
 
 		break;
 	      }
@@ -1243,7 +1185,7 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 	      else
 		R[RD (inst)] = 0;
 
-				processInst(RS (inst), RT (inst), RD (inst), controlSignal, false);
+				processInst(RS (inst), RT (inst), RD (inst), R_TYPE_CONTROL_SIGNAL, false);
 
 	      break;
 
@@ -1253,7 +1195,7 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 	      else
 		R[RT (inst)] = 0;
 
-				processInst(RS (inst), RT (inst), RD (inst), controlSignal, false);
+				processInst(RS (inst), RT (inst), RD (inst), I_TYPE_CONTROL_SIGNAL, false);
 
 	      break;
 
@@ -1309,7 +1251,7 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 		else
 		  R[RD (inst)] = val;
 
-		processInst(RS (inst), RT (inst), RD (inst), controlSignal, false);
+		processInst(RS (inst), RT (inst), RD (inst), R_TYPE_CONTROL_SIGNAL, false);
 		
 		break;
 	      }
@@ -1336,7 +1278,7 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 		  RAISE_EXCEPTION (ExcCode_Ov, break);
 		R[RD (inst)] = diff;
 
-		processInst(RS (inst), RT (inst), RD (inst), controlSignal, false);
+		processInst(RS (inst), RT (inst), RD (inst), R_TYPE_CONTROL_SIGNAL, false);
 
 		break;
 	      }
@@ -1348,7 +1290,7 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 	    case Y_SW_OP:
 	      set_mem_word (R[BASE (inst)] + IOFFSET (inst), R[RT (inst)]);
 
-				processInst(RS (inst), RT (inst), RD (inst), controlSignal, false);
+				processInst(RS (inst), RT (inst), RD (inst), SW_TYPE_CONTROL_SIGNAL, false);
 
 	      break;
 
@@ -1463,8 +1405,8 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 
 	    case Y_SYSCALL_OP:
 	      if (!do_syscall ()){
-
-					processInst(RS (inst), RT (inst), RD (inst), controlSignal, false);
+					
+					processInst(RS (inst), RT (inst), RD (inst), NO_TYPE_CONTROL_SIGNAL, false);
 
 					int numOfCycle = 4 + numOfInstruction + numOfDataHazardStall + numOfBranchStall;
 
