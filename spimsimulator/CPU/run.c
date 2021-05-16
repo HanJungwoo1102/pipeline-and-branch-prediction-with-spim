@@ -189,64 +189,7 @@ static int running_in_delay_slot = 0;
 //===============================================================
 
 /*
-	branch prediction
-*/
-
-typedef struct BTB {
-	mem_addr branchInstructionAddress;
-	char predictionBits;
-} BTB;
-
-const int LENGTH_OF_BTB_QUEUE = 8;
-BTB BTBQueue[LENGTH_OF_BTB_QUEUE] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
-int top_OF_BTB_QUEUE = LENGTH_OF_BTB_QUEUE - 1;
-
-void pushInBTBQueue(mem_addr branchInstructionAddress) {
-	top_OF_BTB_QUEUE += 1;
-
-	if (top_OF_BTB_QUEUE == LENGTH_OF_BTB_QUEUE)
-		top_OF_BTB_QUEUE -= LENGTH_OF_BTB_QUEUE;
-
-	BTB btb;
-	btb.branchInstructionAddress = branchInstructionAddress;
-	btb.predictionBits = 1;
-
-	BTBQueue[top_OF_BTB_QUEUE] = btb;
-}
-
-int findIndexBTB(mem_addr instructionAddress) {
-	int i;
-	for (i = 0; i < LENGTH_OF_BTB_QUEUE; i++) {
-		BTB curBTB = BTBQueue[i];
-		if (curBTB.branchInstructionAddress == instructionAddress) {
-			return i;
-		}
-	}
-	return -1;
-}
-
-bool getPrediction(int index) {
-	return BTBQueue[index].predictionBits > 1;
-}
-
-void editPredictionBit(int index, bool isJumped) {
-	if (isJumped && BTBQueue[index].predictionBits < 2) BTBQueue[index].predictionBits += 1;
-	else if (!isJumped && BTBQueue[index].predictionBits > 0) BTBQueue[index].predictionBits -= 1;
-}
-
-void printBTBQueue() {
-	int i;
-	printf("------------------\n");
-	for (i = 0; i < LENGTH_OF_BTB_QUEUE; i++) {
-		BTB curBTB = BTBQueue[i];
-		printf("address: %d, bit: %d\n", curBTB.branchInstructionAddress, curBTB.predictionBits);
-	}
-}
-
-//===============================================================
-
-/*
-	control signal
+	PIPELINE_REGISTER_QUEUE
 */
 
 typedef struct ControlSignal {
@@ -322,12 +265,6 @@ void buildJumpControlSignal(ControlSignal* controlSignal) {
 	controlSignal->Branch = false;
 	controlSignal->Jump = true;
 }
-
-//===============================================================
-
-/*
-	PIPELINE_REGISTER_QUEUE
-*/
 
 typedef struct PipelineRegister {
 	int rs;
@@ -534,6 +471,7 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 		//======================
 		
 		if (step > NUM_OF_NONE_MAIN_INSTRUCTIONS - 1) isAfterMain = true;
+
 		ControlSignal controlSignal;
 
 		//======================
@@ -605,28 +543,16 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 	      RAISE_EXCEPTION (ExcCode_CpU, {}); /* No Coprocessor 2 */
 	      break;
 
-	    case Y_BEQ_OP: {
-				int findedIndex = findIndexBTB(PC);
-
-				if (findedIndex == -1) {
-					pushInBTBQueue(PC);
-					findedIndex = findIndexBTB(PC);
-				}
-
-				bool predict = getPrediction(findedIndex);
-				bool isJumped = R[RS (inst)] == R[RT (inst)];
-				editPredictionBit(findedIndex, isJumped);
-
+	    case Y_BEQ_OP:
 	      BRANCH_INST (R[RS (inst)] == R[RT (inst)],
 			   PC + IDISP (inst),
 			   0);
 
 				buildBranchControlSignal(&controlSignal);
 
-				processInst(RS (inst), RT (inst), RD (inst), controlSignal, predict != isJumped);
+				processInst(RS (inst), RT (inst), RD (inst), controlSignal, predict() != (R[RS (inst)] == R[RT (inst)]));
 
 	      break;
-			}
 
 	    case Y_BEQL_OP:
 	      BRANCH_INST (R[RS (inst)] == R[RT (inst)],
@@ -710,28 +636,16 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 			   1);
 	      break;
 
-	    case Y_BNE_OP: {
-				int findedIndex = findIndexBTB(PC);
-
-				if (findedIndex == -1) {
-					pushInBTBQueue(PC);
-					findedIndex = findIndexBTB(PC);
-				}
-
-				bool predict = getPrediction(findedIndex);
-				bool isJumped = R[RS (inst)] != R[RT (inst)];
-				editPredictionBit(findedIndex, isJumped);
-
+	    case Y_BNE_OP:
 	      BRANCH_INST (R[RS (inst)] != R[RT (inst)],
 			   PC + IDISP (inst),
 			   0);
 				
 				buildBranchControlSignal(&controlSignal);
 
-				processInst(RS (inst), RT (inst), RD (inst), controlSignal, predict != isJumped);
+				processInst(RS (inst), RT (inst), RD (inst), controlSignal, predict() != (R[RS (inst)] != R[RT (inst)]));
 			
 	      break;
-			}
 
 	    case Y_BNEL_OP:
 	      BRANCH_INST (R[RS (inst)] != R[RT (inst)],
