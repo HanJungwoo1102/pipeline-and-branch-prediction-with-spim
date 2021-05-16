@@ -512,7 +512,7 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 	      return false;
 	    }
 
-	  // if (display)
+	  if (display)
 	    print_inst (PC);
 
 #ifdef TEST_ASM
