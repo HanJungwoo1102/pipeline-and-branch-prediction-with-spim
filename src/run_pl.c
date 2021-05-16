@@ -1109,6 +1109,9 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 
 	    case Y_NOR_OP:
 	      R[RD (inst)] = ~ (R[RS (inst)] | R[RT (inst)]);
+
+				processInst(RS (inst), RT (inst), RD (inst), R_TYPE_CONTROL_SIGNAL, false);
+
 	      break;
 
 	    case Y_OR_OP:
