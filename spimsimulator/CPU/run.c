@@ -1109,6 +1109,9 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 
 	    case Y_NOR_OP:
 	      R[RD (inst)] = ~ (R[RS (inst)] | R[RT (inst)]);
+
+				processInst(RS (inst), RT (inst), RD (inst), R_TYPE_CONTROL_SIGNAL, false);
+
 	      break;
 
 	    case Y_OR_OP:
@@ -1165,7 +1168,7 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 		else
 		  R[RD (inst)] = R[RT (inst)];
 
-		processInst(NULL, RT (inst), RD (inst), R_TYPE_CONTROL_SIGNAL, false);
+		processInst(-1, RT (inst), RD (inst), R_TYPE_CONTROL_SIGNAL, false);
 
 		break;
 	      }
@@ -1253,7 +1256,7 @@ run_spim (mem_addr initial_PC, int steps_to_run, bool display)
 		else
 		  R[RD (inst)] = val;
 
-		processInst(RS (inst), RT (inst), RD (inst), R_TYPE_CONTROL_SIGNAL, false);
+		processInst(-1, RT (inst), RD (inst), R_TYPE_CONTROL_SIGNAL, false);
 		
 		break;
 	      }
